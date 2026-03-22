@@ -1,14 +1,12 @@
 # Building a Security Monitoring Home Lab with Splunk
 
-This is a walkthrough of how I built a home SIEM lab using Splunk to monitor Windows security events, detect attacks, and set up automated alerts. The goal was to simulate what a real SOC analyst does day-to-day — ingest logs, write detections, and respond to threats.
-
-Everything here runs on a single Windows machine. No cloud, no paid tools, no VMs required.
+This is a walkthrough of how I built a home SIEM lab using Splunk to monitor Windows security events, detect attacks, and set up automated alerts.
 
 ---
 
 ## What This Lab Covers
 
-- Installing and configuring Splunk Enterprise (free version)
+- Installing and configuring Splunk
 - Forwarding Windows Security logs using Splunk Universal Forwarder
 - Writing SPL queries to detect brute force, privilege escalation, and suspicious activity
 - Setting up scheduled alerts that fire automatically
@@ -20,11 +18,11 @@ Everything here runs on a single Windows machine. No cloud, no paid tools, no VM
 
 ### Splunk Enterprise
 
-1. Go to [splunk.com](https://www.splunk.com/en_us/download/splunk-enterprise.html) and download Splunk Enterprise (the free license lets you ingest up to 500MB/day, which is plenty for a home lab).
+1. Go to [splunk.com](https://www.splunk.com/en_us/download/splunk-enterprise.html) and download Splunk Enterprise (the free license lets you ingest up to 500MB/day, which is enough for a home lab).
 
-2. Run the installer, leave everything as default. During setup you'll create an admin username and password — remember these, you'll use them to log into the web interface.
+2. Run the installer, leave everything as default. During setup you'll create an admin username and password. remember these, you'll use them to log into the web interface.
 
-3. Once installed, Splunk runs as a service. Open your browser and go to:
+3. Once installed, open your browser and go to:
 
 ```
 http://localhost:8000
@@ -34,7 +32,7 @@ http://localhost:8000
 
 ### Splunk Universal Forwarder
 
-The Universal Forwarder is a lightweight agent that sits on your machine and sends logs to Splunk. This is how it works in real enterprise environments — forwarders on endpoints, Splunk on a central server.
+The Universal Forwarder is a lightweight agent that sits on your machine and sends logs to Splunk. This is how it works in real environments. forwarders on endpoints, Splunk on a central server.
 
 1. Download the Universal Forwarder from [splunk.com](https://www.splunk.com/en_us/download/universal-forwarder.html).
 
@@ -45,6 +43,8 @@ localhost:9997
 ```
 
 3. Finish the install with default settings.
+
+Note: Leave the deployment server empty.
 
 ---
 
@@ -59,7 +59,7 @@ Before Splunk can store your logs, you need to create an index (think of it as a
 3. Leave everything else as default
 4. Click **Save**
 
-If you skip this step, Splunk silently drops all incoming logs because it has nowhere to put them. I learned this the hard way.
+If you skip this step, Splunk silently drops all incoming logs because it has nowhere to put them.
 
 ### Enable the Receiving Port
 
@@ -97,7 +97,7 @@ index = wineventlog
 
 This tells the forwarder to collect Windows Security and System logs and send them to the `wineventlog` index.
 
-In the same folder, create a file called `outputs.conf` and paste this:
+In the same folder, edit/create a file called `outputs.conf` and paste this:
 
 ```ini
 [tcpout]
@@ -130,7 +130,6 @@ You should start seeing events flowing in. If nothing shows up, check:
 
 - Is the forwarder running? → `sc query SplunkForwarder` (should say RUNNING)
 - Is port 9997 listening? → `netstat -an | findstr 9997` (should show LISTENING and ESTABLISHED)
-- Does the index exist? → Settings → Indexes → look for `wineventlog`
 
 ---
 
@@ -140,7 +139,7 @@ A SIEM with only normal logon events isn't very interesting. To practice detecti
 
 ### Simulate a Brute Force Attack
 
-Lock your PC (Win + L) and enter the wrong password 15-20 times, then log in with the correct password. This creates a bunch of EventCode 4625 (failed logon) followed by a 4624 (successful logon) — the exact pattern of a brute force attack that eventually succeeds.
+Lock your PC (Win + L) and enter the wrong password multiple times, then log in with the correct password. This creates a bunch of EventCode 4625 (failed logon) followed by a 4624 (successful logon), the exact pattern of a brute force attack that eventually succeeds.
 
 ### Simulate Account Persistence
 
@@ -182,12 +181,13 @@ This is important — without this, EventCode 4688 only shows the process name, 
 
 ## Part 4 — Detection Queries
 
-These are the SPL queries I use to find suspicious activity in the logs.
+These are the SPL queries I use to find suspicious activity in the logs. Each one targets a specific attack pattern that a SOC analyst would look for.
+
+---
 
 ### Brute Force Detection
 
-Find accounts with a high number of failed logons:
-
+Someone trying to guess a password will generate a lot of failed logons. This query counts failed logons per account and flags anything over 5.
 ```spl
 index=wineventlog EventCode=4625
 | stats count by Account_Name
@@ -195,51 +195,74 @@ index=wineventlog EventCode=4625
 | sort -count
 ```
 
+- `EventCode=4625` → failed logon events only
+- `stats count by Account_Name` → how many failures per account
+- `where count > 5` → ignore normal typos, focus on suspicious volume
+- `sort -count` → worst offenders at the top
+
+---
+
 ### Brute Force Timeline
 
-See when the failed logons happened (useful for spotting spikes):
-
+The query above tells you *who* is being targeted. This one tells you *when*. Spikes on the timeline usually mean an automated attack.
 ```spl
 index=wineventlog EventCode=4625
 | timechart span=5m count
 ```
 
-### Brute Force Followed by Success
+- `timechart span=5m` → groups events into 5-minute buckets
 
-This is the dangerous one — failed attempts followed by a successful logon means the password was guessed:
+---
 
+### Brute Force Followed by Successful Logon
+
+A bunch of failed logons followed by a success means the attacker guessed the password and got in.
 ```spl
 index=wineventlog EventCode=4625 OR EventCode=4624
-| eval target_account=if(EventCode=4625, mvindex(Account_Name, 1), mvindex(Account_Name, 0))
+| eval target_account=mvindex(Account_Name, 1)
 | stats count(eval(EventCode=4625)) as Failed, count(eval(EventCode=4624)) as Success by target_account
 | where target_account!="JADS-LAPTOP$" AND target_account!="-" AND target_account!="SYSTEM"
 | sort -Failed
 ```
 
-A note on the `mvindex` usage here: in 4625 events, the `Account_Name` field is multi-valued. Position 0 is the machine account (Subject), position 1 is the actual account that failed. Without `mvindex`, Splunk mixes these up and you get misleading results.
+- `EventCode=4625 OR EventCode=4624` → get both failed and successful logons
+- `mvindex(Account_Name, 1)` → the `Account_Name` field in these events is multi-valued (it contains both the machine account and the real user). Position 1 is the actual human account we care about. Without this, Splunk mixes up machine accounts and real users
+- `count(eval(EventCode=4625)) as Failed` → counts only the 4625 events for each account
+- `count(eval(EventCode=4624)) as Success` → counts only the 4624 events for each account
+- `where` clause → filters out machine accounts (`JADS-LAPTOP$`), blank entries (`-`), and `SYSTEM` since these are background noise
+- If you see an account with high Failed AND Success > 0, that account was likely compromised
+
+---
 
 ### New Account Creation
 
-Catch when someone creates a new user:
-
+Attackers often create new accounts to maintain access. This catches any account creation event.
 ```spl
 index=wineventlog EventCode=4720
 | table _time, Account_Name, Security_ID, ComputerName
 ```
 
+- `EventCode=4720` → user account was created
+- Any unexpected account creation (especially outside business hours) should be investigated
+
+---
+
 ### User Added to Admin Group
 
-Catch privilege escalation via group membership:
-
+Creating an account is one thing — adding it to the admin group is where it becomes dangerous.
 ```spl
 index=wineventlog EventCode=4732
 | table _time, Account_Name, Security_ID, ComputerName
 ```
 
+- `EventCode=4732` → someone was added to a local security group
+- If the group is Administrators, this is a privilege escalation
+
+---
+
 ### Backdoor Account Pattern
 
-Account created and immediately added to admin group — classic attacker persistence:
-
+This combines the two queries above. If an account is created AND added to the admin group within 5 minutes, that's a strong indicator of attacker persistence.
 ```spl
 index=wineventlog EventCode=4720 OR EventCode=4732
 | transaction Account_Name maxspan=5m
@@ -247,10 +270,16 @@ index=wineventlog EventCode=4720 OR EventCode=4732
 | table _time, Account_Name, EventCode, duration
 ```
 
+- `transaction` → groups events that share the same `Account_Name` into one session
+- `maxspan=5m` → only groups events that happen within 5 minutes of each other
+- `eventcount > 1` → only show accounts that triggered both creation AND group addition
+- `duration` → shows how much time passed between the two events (fast = automated/scripted = suspicious)
+
+---
+
 ### Logon Activity by Type
 
-Understand how users are authenticating:
-
+Not all logons are the same. Type 2 is someone at the keyboard, type 10 is RDP, type 3 is network (SMB). This query shows you the breakdown.
 ```spl
 index=wineventlog EventCode=4624
 | stats count by Logon_Type
@@ -268,55 +297,41 @@ index=wineventlog EventCode=4624
 | sort -count
 ```
 
+- `eval` with `case` → translates the raw logon type numbers into human-readable descriptions
+- Type 3 (Network) between workstations could indicate lateral movement
+- Type 10 (RDP) from unexpected sources could indicate unauthorized remote access
+
+---
+
 ### Suspicious Process Execution
 
-Detect common recon commands (requires command line auditing enabled):
-
+After gaining access, attackers run reconnaissance commands to understand the environment. These are the most common ones. Requires command line auditing to be enabled in Group Policy.
 ```spl
 index=wineventlog EventCode=4688
 | search CommandLine="*whoami*" OR CommandLine="*net user*" OR CommandLine="*net localgroup*" OR CommandLine="*systeminfo*" OR CommandLine="*ipconfig*"
 | table _time, Account_Name, CommandLine, ParentProcessName
 ```
 
+- `EventCode=4688` → new process was created
+- `CommandLine` → the actual command that was run (only available if auditing is enabled)
+- `whoami` → "who am I?" — attacker checking what account they have
+- `net user` / `net localgroup` → listing users and admin group members
+- `systeminfo` / `ipconfig` → gathering system and network info
+- `ParentProcessName` → shows what launched the command (e.g., `cmd.exe` or `powershell.exe`)
+
+---
+
 ### PowerShell Execution
 
+PowerShell is the most commonly abused tool by attackers on Windows. This catches any PowerShell process being launched.
 ```spl
 index=wineventlog EventCode=4688 NewProcessName="*powershell*"
 | table _time, Account_Name, CommandLine, ParentProcessName
 ```
 
-### Audit Log Cleared
-
-An attacker covering their tracks:
-
-```spl
-index=wineventlog EventCode=1102
-| table _time, Account_Name, ComputerName
-```
-
-### Full Event Overview
-
-Quick summary of everything happening in your environment:
-
-```spl
-index=wineventlog
-| stats count by EventCode
-| eval description=case(
-    EventCode=4624, "Successful Logon",
-    EventCode=4625, "Failed Logon",
-    EventCode=4634, "Logoff",
-    EventCode=4648, "Explicit Credential Logon",
-    EventCode=4672, "Special Privileges Assigned",
-    EventCode=4688, "Process Created",
-    EventCode=4720, "User Account Created",
-    EventCode=4726, "User Account Deleted",
-    EventCode=4732, "Member Added to Security Group",
-    EventCode=1102, "Audit Log Cleared",
-    1=1, "Other"
-)
-| table EventCode, description, count
-| sort -count
-```
+- `NewProcessName="*powershell*"` → catches `powershell.exe` regardless of its full path
+- Check `CommandLine` for encoded commands (`-enc` or `-encodedcommand`) — attackers use base64 encoding to hide what they're running
+- Check `ParentProcessName` — PowerShell launched by `explorer.exe` is normal (user opened it). PowerShell launched by `winword.exe` (Word) is a macro attack
 
 ---
 
@@ -353,38 +368,9 @@ To create an alert: **Settings → Searches, Reports, and Alerts → New Alert**
 - **Trigger:** Per-Result, Number of Results > 0
 - **Action:** Log Event → `new account or admin group change detected`
 
-### Alert 3 — Audit Log Cleared
-
-- **Title:** Security Log Cleared — Possible Tampering
-- **Description:** Detects when the security audit log is cleared, a common technique attackers use to cover their tracks
-- **Search:**
-  ```spl
-  index=wineventlog EventCode=1102
-  | table _time, Account_Name, ComputerName
-  ```
-- **Schedule:** every 5 minutes
-- **Trigger:** Per-Result, Number of Results > 0
-- **Action:** Log Event → `audit log cleared`
-
-### Alert 4 — Suspicious Recon Commands
-
-- **Title:** Suspicious Reconnaissance Commands Detected
-- **Description:** Detects common post-exploitation enumeration commands like whoami, net user, and systeminfo
-- **Search:**
-  ```spl
-  index=wineventlog EventCode=4688
-  | search CommandLine="*whoami*" OR CommandLine="*net user*" OR CommandLine="*net localgroup*" OR CommandLine="*systeminfo*"
-  | table _time, Account_Name, CommandLine
-  ```
-- **Schedule:** every 5 minutes
-- **Trigger:** Per-Result, Number of Results > 0
-- **Action:** Log Event → `recon commands detected`
-
 ---
 
 ## Part 6 — Important Windows Event IDs
-
-These are the event codes that matter most for security monitoring. Knowing what these mean is essential for any SOC role.
 
 ### Authentication Events
 
@@ -437,24 +423,3 @@ These are the event codes that matter most for security monitoring. Knowing what
 | 0xC0000072 | Account disabled |
 | 0xC0000234 | Account locked out |
 | 0xC0000064 | Username does not exist |
-
----
-
-## Tools Used
-
-- [Splunk Enterprise](https://www.splunk.com/en_us/download/splunk-enterprise.html) (free license, 500MB/day)
-- [Splunk Universal Forwarder](https://www.splunk.com/en_us/download/universal-forwarder.html)
-- Windows 10/11 with built-in Security Event Logging
-- SPL (Search Processing Language)
-
----
-
-## What I Learned
-
-- How to set up end-to-end log ingestion from endpoint to SIEM
-- How to troubleshoot data ingestion issues (port listening, index creation, forwarder connectivity)
-- How to read and interpret Windows Security Event Logs
-- How to write SPL queries for threat detection
-- How to build automated alerts that detect attacks in near real-time
-- The importance of multi-value field handling in Splunk (the `mvindex` lesson with 4625 events)
-- How brute force attacks, privilege escalation, and attacker persistence look in raw log data
