@@ -1,4 +1,3 @@
-```markdown
 # Security Monitoring Home Lab with Splunk
 
 This project is a walkthrough of how I built a home SIEM lab using Splunk to monitor Windows security events, detect attacks, and set up automated alerts.
@@ -27,14 +26,10 @@ Download Splunk Enterprise and install it with default settings.
 After installation, open:
 
 ```
-
-[http://localhost:8000](http://localhost:8000)
-
+http://localhost:8000
 ```
 
 Log in with your admin credentials.
-
----
 
 ### Splunk Universal Forwarder
 
@@ -43,9 +38,7 @@ Install the Universal Forwarder to send logs to Splunk.
 Set receiving indexer:
 
 ```
-
 localhost:9997
-
 ```
 
 ---
@@ -54,31 +47,23 @@ localhost:9997
 
 ### Create the Index
 
-Go to:
-Settings → Indexes → New Index
+Go to: Settings → Indexes → New Index
 
 - Name: `wineventlog`
 
----
-
 ### Enable Receiving Port
 
-Go to:
-Settings → Forwarding and Receiving
+Go to: Settings → Forwarding and Receiving
 
 - Add port: `9997`
-
----
 
 ### Configure the Forwarder
 
 Edit:
 
 ```
-
 C:\Program Files\SplunkUniversalForwarder\etc\system\local\inputs.conf
-
-````
+```
 
 Add:
 
@@ -94,17 +79,13 @@ index = wineventlog
 [WinEventLog://Microsoft-Windows-Sysmon/Operational]
 disabled = 0
 index = wineventlog
-````
-
----
+```
 
 ### Restart Forwarder
 
 ```bash
 splunk restart
 ```
-
----
 
 ### Verify Logs
 
@@ -118,17 +99,17 @@ index=wineventlog
 
 Sysmon provides detailed logs about process execution and system activity.
 
-### What Sysmon adds
+### What Sysmon Adds
 
-* Process execution (Event ID 1)
-* Command-line visibility
-* Parent-child process tracking
+- Process execution (Event ID 1)
+- Command-line visibility
+- Parent-child process tracking
 
 This allows detection of:
 
-* PowerShell attacks
-* Suspicious process chains
-* Recon activity
+- PowerShell attacks
+- Suspicious process chains
+- Recon activity
 
 ---
 
@@ -136,11 +117,9 @@ This allows detection of:
 
 ### Brute Force
 
-* Lock your PC
-* Enter wrong password multiple times
-* Then log in correctly
-
----
+- Lock your PC
+- Enter wrong password multiple times
+- Then log in correctly
 
 ### Account Persistence
 
@@ -148,8 +127,6 @@ This allows detection of:
 net user testattacker Password123! /add
 net localgroup administrators testattacker /add
 ```
-
----
 
 ### Recon Commands
 
@@ -173,18 +150,11 @@ index=wineventlog EventCode=4625
 | where count > 5
 ```
 
-#### What it detects
+**What it detects:** Multiple failed login attempts.
 
-Multiple failed login attempts.
+**False Positives:** User mistyping password, service using wrong credentials.
 
-#### False Positives
-
-* User mistyping password
-* Service using wrong credentials
-
-#### MITRE
-
-* T1110 (Brute Force)
+**MITRE:** T1110 (Brute Force)
 
 ---
 
@@ -196,18 +166,11 @@ Image="*\\powershell.exe"
 CommandLine="*-enc*" OR CommandLine="*-encodedcommand*"
 ```
 
-#### What it detects
+**What it detects:** Hidden PowerShell execution using base64 encoding.
 
-Hidden PowerShell execution.
+**False Positives:** Admin scripts, automation tools.
 
-#### False Positives
-
-* Admin scripts
-* Automation tools
-
-#### MITRE
-
-* T1059.001 (PowerShell)
+**MITRE:** T1059.001 (PowerShell)
 
 ---
 
@@ -219,17 +182,11 @@ ParentImage="*\\WINWORD.EXE"
 Image="*\\powershell.exe"
 ```
 
-#### What it detects
+**What it detects:** Word spawning PowerShell (possible macro attack).
 
-Word spawning PowerShell (possible macro attack).
+**False Positives:** Rare but possible admin scripts.
 
-#### False Positives
-
-* Rare but possible admin scripts
-
-#### MITRE
-
-* T1059 (Command Execution)
+**MITRE:** T1059 (Command Execution)
 
 ---
 
@@ -240,18 +197,11 @@ EventCode=1
 CommandLine="*whoami*" OR CommandLine="*net user*" OR CommandLine="*systeminfo*"
 ```
 
-#### What it detects
+**What it detects:** System discovery commands.
 
-System discovery commands.
+**False Positives:** IT troubleshooting, admin activity.
 
-#### False Positives
-
-* IT troubleshooting
-* Admin activity
-
-#### MITRE
-
-* Discovery techniques
+**MITRE:** Discovery techniques
 
 ---
 
@@ -267,17 +217,9 @@ index=wineventlog (EventCode=4625 OR EventCode=4624 OR EventCode=4672)
 | where failed > 3 AND success > 0 AND privileged > 0
 ```
 
-### What it detects
+**What it detects:** A full attack flow — multiple failed logins followed by a successful login with privileged access.
 
-A full attack flow:
-
-1. Multiple failed logins
-2. Successful login
-3. Privileged access
-
-### Why it matters
-
-This shows attacker behavior, not just single events.
+**Why it matters:** This correlates events into an attack chain rather than flagging individual events in isolation.
 
 ---
 
@@ -285,7 +227,7 @@ This shows attacker behavior, not just single events.
 
 When an alert triggers:
 
-1. Identify affected account
+1. Identify the affected account
 2. Check login history
 3. Check source activity
 4. Check privilege changes
@@ -318,67 +260,29 @@ level: high
 
 ### Authentication
 
-* 4624 → Successful login
-* 4625 → Failed login
-* 4672 → Admin privileges
+| EventCode | Description |
+|-----------|-------------|
+| 4624 | Successful login |
+| 4625 | Failed login |
+| 4672 | Admin privileges assigned |
 
 ### Account Activity
 
-* 4720 → Account created
-* 4732 → Added to admin group
+| EventCode | Description |
+|-----------|-------------|
+| 4720 | Account created |
+| 4732 | Added to admin group |
 
 ### Sysmon
 
-* 1 → Process creation
+| EventCode | Description |
+|-----------|-------------|
+| 1 | Process creation |
 
 ---
 
 ## Final Notes
 
-This lab focuses on:
+This lab focuses on detecting attacker behavior, simulating real attack scenarios, understanding logs and alerts, thinking about false positives, and connecting events into attack chains.
 
-* Detecting attacker behavior
-* Simulating real attack scenarios
-* Understanding logs and alerts
-* Thinking about false positives
-* Connecting events into attack chains
-
----
-
-## Key Takeaway
-
-This is not just about writing queries.
-
-It is about:
-
-* understanding attacker behavior
-* detecting it
-* and investigating it
-
-```
-
----
-
-# ✅ What I did for you
-
-- Kept your structure  
-- Added:
-  - Sysmon  
-  - Multi-stage detection  
-  - False positives  
-  - MITRE  
-  - Investigation logic  
-- Kept language **simple and clean** (no overcomplication)
-
----
-
-# 🚀 Next step
-
-If you want, I can:
-
-👉 Make your **GitHub look like a top-tier project (badges, visuals, screenshots layout)**  
-👉 Or update your **CV perfectly based on this final version**  
-👉 Or simulate **interview questions from this exact project**
-
-Just tell me 👍
-```
+The goal is not just writing queries — it is understanding attacker behavior, detecting it, and investigating it.
