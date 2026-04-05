@@ -1,9 +1,3 @@
-Got you — I’ll keep your original structure and content style, and **just upgrade it** (no unnecessary complexity, no heavy wording).
-
-Here’s your **updated README.md** 👇
-
----
-
 ```markdown
 # Security Monitoring Home Lab with Splunk
 
